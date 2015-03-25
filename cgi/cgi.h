@@ -22,7 +22,7 @@
 #define MAX_ARG_NAME_LEN 32
 
 /*! @brief The file name of the live image. */
-#define IMG_FN "../image.bmp"
+#define IMG_FN "../image.gif"
 
 /* @brief The different data types of the argument string. */
 enum EnArgumentType
@@ -51,11 +51,26 @@ struct ARGUMENT
 /*! @brief Holds the values parsed from the argument string. */
 struct ARGUMENT_DATA
 {
-	/*! @brief True if color images should be returned.*/
-	bool bDoCaptureColor;
-	/*! @brief Says whether the argument bDoDebayering has been
+	/*! @Shutter time in micro seconds.*/
+	int nExposureTime;
+	/*! @brief Says whether the argument ExposureTime has been
 	 * supplied or not. */
-	bool bDoCaptureColor_supplied;
+	bool bExposureTime_supplied;
+	/*! @brief cut off value for change detection.*/
+	int nThreshold;
+	/*! @brief Says whether the argument threshold has been
+	 * supplied or not. */
+	bool bThreshold_supplied;
+	/*! @brief index of image to be sent via cgi to webserver.*/
+	int nImageType;
+	/*! @brief Says whether the argument ImageType has been
+	 * supplied or not. */
+	bool bImageType_supplied;
+	/*! @brief additionl info to be sent via cgi to webserver.*/
+	int nAddInfo;
+	/*! @brief Says whether the argument nAddInfo has been
+	 * supplied or not. */
+	bool bAddInfo_supplied;
 };
 
 /*! @brief Main object structure of the CGI. Contains all 'global'
@@ -75,6 +90,7 @@ struct CGI_TEMPLATE
 	/*! @brief The GET/POST arguments of the CGI. */
 	struct ARGUMENT_DATA    args;
 	/*! @brief Temporary data buffer for the images to be saved. */
-	uint8 imgBuf[3*OSC_CAM_MAX_IMAGE_WIDTH*OSC_CAM_MAX_IMAGE_HEIGHT];
+	/* we reserve space for ADD_INFO buffer for drawing objects */
+	uint8 imgBuf[2*NUM_COLORS*OSC_CAM_MAX_IMAGE_WIDTH*OSC_CAM_MAX_IMAGE_HEIGHT+4];
 };
 #endif /*CGI_TEMPLATE_H_*/

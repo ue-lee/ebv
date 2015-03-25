@@ -51,15 +51,36 @@ struct IPC_DATA
 	struct APPLICATION_STATE state;
 };
 
+/*! @brief list of images we require for processing; always use these indices
+ * */
+enum IMG_TYPE
+{
+	SENSORIMG,
+ 	BACKGROUND,
+ 	THRESHOLD,
+ 	INDEX0,
+ 	INDEX1,
+ 	ADDINFO,//do not use this index for image processing as it is used for parsing the drawing info to cgi.c
+ 	MAX_NUM_IMG
+};
+
+
 /*! @brief The structure storing all important variables of the application.
  * */
 struct TEMPLATE
 {
 	/*! @brief The frame buffers for the frame capture device driver.*/
 	uint8 u8FrameBuffers[NR_FRAME_BUFFERS][OSC_CAM_MAX_IMAGE_HEIGHT*OSC_CAM_MAX_IMAGE_WIDTH];
-	/*! @brief A buffer to hold the resulting color image. */
-	uint8 u8ResultImage[3*OSC_CAM_MAX_IMAGE_WIDTH*OSC_CAM_MAX_IMAGE_HEIGHT];
-	
+	/*! @brief A buffer to hold the temporary image. */
+	uint8 u8TempImage[MAX_NUM_IMG][NUM_COLORS*OSC_CAM_MAX_IMAGE_WIDTH/2*OSC_CAM_MAX_IMAGE_HEIGHT/2];
+	/* size of additional data buffer */
+	uint32 AddBufSize;
+	/* indicates that the shutter time changed */
+	bool nExposureTimeChanged;
+	/* indicates that the processing should be reset */
+	bool nResetProcessing;
+	/* the threshold used for processing purposes */
+	int nThreshold;
 	/*! @brief Handle to the framework instance. */
 	void *hFramework;
 	/*! @brief Camera-Scene perspective */
@@ -134,8 +155,51 @@ void IpcSendImage(fract16 *f16Image, uint32 nPixels);
  * image and writing the result to the result image buffer. This should
  * be the starting point where you add your code.
  * 
- * @param pRawImg The raw image to process.
+ * @param
  *//*********************************************************************/
-void ProcessFrame(uint8 *pRawImg);
+void ProcessFrame();
+
+/*********************************************************************//*!
+ * @brief do a reset of the Processing.
+ *
+ *
+ * @param
+ *//*********************************************************************/
+void ResetProcess();
+
+/*********************************************************************//*!
+ * @brief draw a bounding box in the camera image.
+ *
+ * work is done in cgi.c only in case an image is
+ * requested by browser; the data is transmitted by pasting it at the end of the image
+ * buffer (data.ipc.req.pAddr).
+ *
+ * @param left, bottom, right, top: coordinates; recFill: whether to fill
+ * the rectangle; color: color values from enum ObjColor
+ *//*********************************************************************/
+void DrawBoundingBox(uint16 left, uint16 bottom, uint16 right, uint16 top, bool recFill, uint8 color);
+
+/*********************************************************************//*!
+ * @brief draw a line in the camera image.
+ *
+ * work is done in cgi.c only in case an image is
+ * requested by browser; the data is transmitted by pasting it at the end of the image
+ * buffer (data.ipc.req.pAddr).
+ *
+ * @param x1, y1, x2, y2: coordinates; color: color values from enum ObjColor
+ *//*********************************************************************/
+void DrawLine(uint16 x1, uint16 y1, uint16 x2, uint16 y2, uint8 color);
+
+/*********************************************************************//*!
+ * @brief draw a string in the camera image.
+ *
+ * work is done in cgi.c only in case an image is
+ * requested by browser; the data is transmitted by pasting it at the end of the image
+ * buffer (data.ipc.req.pAddr).
+ *
+ * @param xPos, yPos: coordinates; len: string length; font: font from enum FontType;
+ * color: color values from enum ObjColor; str: the string pointer (is copied and null terminated)
+ *//*********************************************************************/
+void DrawString(uint16 xPos, uint16 yPos, uint16 len, uint16 font, uint8 color, char* str);
 
 #endif /*TEMPLATE_H_*/

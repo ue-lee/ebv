@@ -15,8 +15,24 @@
 #include <unistd.h>
 
 #include "cgi.h"
+#include "gd.h"
+#include "gdfontg.h"
+#include "gdfontl.h"
+#include "gdfontmb.h"
+#include "gdfonts.h"
+#include "gdfontt.h"
 
 #include <time.h>
+
+const int sizRect = sizeof(struct IMG_RECT);
+const int sizLine = sizeof(struct IMG_LINE);
+const int sizString = sizeof(struct IMG_STRING);
+const int nc = OSC_CAM_MAX_IMAGE_WIDTH/2;
+const int nr = OSC_CAM_MAX_IMAGE_HEIGHT/2;
+const int siz = (OSC_CAM_MAX_IMAGE_WIDTH/2)*(OSC_CAM_MAX_IMAGE_HEIGHT/2);
+
+const int colorLUT[MAX_NUM_COLORS][3] = {{255, 255, 255}, {0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255},
+										 {255, 255, 0}, {255, 0, 255}, {0, 255, 255}};
 
 /*! @brief Main object structure of the CGI. Contains all 'global'
  * variables. */
@@ -25,8 +41,22 @@ struct CGI_TEMPLATE cgi;
 /*! @brief All potential arguments supplied to this CGI. */
 struct ARGUMENT args[] =
 {
-	{ "DoCaptureColor", BOOL_ARG, &cgi.args.bDoCaptureColor, &cgi.args.bDoCaptureColor_supplied }
+	{ "exposureTime", INT_ARG, &cgi.args.nExposureTime, &cgi.args.bExposureTime_supplied },
+	{ "Threshold", INT_ARG, &cgi.args.nThreshold, &cgi.args.bThreshold_supplied },
+	{ "ImageType", INT_ARG, &cgi.args.nImageType, &cgi.args.bImageType_supplied },
+	{ "AddInfo", INT_ARG, &cgi.args.nAddInfo, &cgi.args.bAddInfo_supplied }
 };
+
+
+/*! @brief look up function for color palette in order to allow switching form gray to true color */
+int colorLoolUp(int color)
+{
+#if NUM_COLORS == 1
+	return (255-2*color);
+#else
+	return gdTrueColor(colorLUT[color][0], colorLUT[color][1], colorLUT[color][2]);
+#endif
+}
 
 /*! @brief Strips whiltespace from the beginning and the end of a string and returns the new beginning of the string. Be advised, that the original string gets mangled! */
 char * strtrim(char * str) {
@@ -60,7 +90,9 @@ static OSC_ERR CGIParseArguments()
 
 	/* Intialize all arguments as 'not supplied' */
 	for (int i = 0; i < sizeof args / sizeof (struct ARGUMENT); i += 1)
+	{
 		*args[i].pbSupplied = false;
+	}
 
 	while (fgets (buffer, sizeof buffer, stdin)) {
 		struct ARGUMENT *pArg = NULL;
@@ -76,6 +108,8 @@ static OSC_ERR CGIParseArguments()
 
 		key = strtrim(buffer);
 		value = strtrim(value);
+
+		OscLog(INFO, "obtained key: %s, and Value: %s\n", key, value);
 
 		for (int i = 0; i < sizeof(args)/sizeof(struct ARGUMENT); i += 1) {
 			if (strcmp(args[i].strName, key) == 0) {
@@ -132,7 +166,6 @@ static OSC_ERR CGIParseArguments()
 static OSC_ERR QueryApp()
 {
 	OSC_ERR err;
-	struct OSC_PICTURE pic;
 
 	/* First, get the current state of the algorithm. */
 	err = OscIpcGetParam(cgi.ipcChan, &cgi.appState, GET_APP_STATE, sizeof(struct APPLICATION_STATE));
@@ -148,48 +181,135 @@ static OSC_ERR QueryApp()
 	case APP_OFF:
 		/* Algorithm is off, nothing else to do. */
 		break;
-	case APP_CAPTURE_COLOR:
+	case APP_CAPTURE_ON:
 		if (cgi.appState.bNewImageReady)
 		{
+			FILE* F;
+			uint16 r,c;
+			uint8* pData;
+			uint32 dataSiz, i;
+			uint16 oType;
+
 			/* If there is a new image ready, request it from the application. */
-			err = OscIpcGetParam(cgi.ipcChan,
-					cgi.imgBuf,
-					GET_COLOR_IMG,
-					3*OSC_CAM_MAX_IMAGE_WIDTH*OSC_CAM_MAX_IMAGE_HEIGHT);
+			err = OscIpcGetParam(cgi.ipcChan, cgi.imgBuf, GET_NEW_IMG, NUM_COLORS*nc*nr);
 			if (err != SUCCESS)
 			{
 				OscLog(DEBUG, "CGI: Getting new image failed! (%d)\n", err);
 				return err;
 			}
-
-			/* Write the image to the RAM file system where it can be picked
-			 * up by the webserver on request from the browser. */
-			pic.width = OSC_CAM_MAX_IMAGE_WIDTH;
-			pic.height = OSC_CAM_MAX_IMAGE_HEIGHT;
-			pic.type = OSC_PICTURE_BGR_24;
-			pic.data = (void*)cgi.imgBuf;
-
-			return OscBmpWrite(&pic, IMG_FN);
-		}
-		break;
-	case APP_CAPTURE_RAW:
-		if (cgi.appState.bNewImageReady)
-		{
-			/* If there is a new image ready, request it from the application. */
-			err = OscIpcGetParam(cgi.ipcChan, cgi.imgBuf, GET_RAW_IMG, OSC_CAM_MAX_IMAGE_WIDTH*OSC_CAM_MAX_IMAGE_HEIGHT);
-			if (err != SUCCESS)
+//we have to take care of the different ways gdlib treats gray and color data
+#if NUM_COLORS == 1
+			//create gd image and ...
+			gdImagePtr im_out =  gdImageCreate(nc, nr);
+			//initialize with sensor image
+			for(r = 0; r < nr; r++)
 			{
-				OscLog(DEBUG, "CGI: Getting new image failed! (%d)\n", err);
-				return err;
+				//in case the original image should not be modified replace the following loop by the memcpy statement
+				//memcpy(im_out->pixels[r], cgi.imgBuf+r*nc, nc*sizeof(uint8));
+				for(c = 0; c < nc; c++)
+				{
+					im_out->pixels[r][c] = (*(cgi.imgBuf+r*nc+c) & 0xfe);//mask out first bit -> only even gray values
+				}
+			}
+			//allocate color palette (255 is red -> we did not change the sensor image!! should rather use a LUT)
+			for(c = 0; c < 256; c++)
+			{
+				if((c%2) && c > 255-2*MAX_NUM_COLORS){
+					i = (255-c)/2;
+					gdImageColorAllocate (im_out, colorLUT[i][0], colorLUT[i][1], colorLUT[i][2]);
+				} else {
+					gdImageColorAllocate (im_out, c, c, c);
+				}
+			}
+#else
+			//create gd image and ...
+			gdImagePtr im_out =  gdImageCreateTrueColor(nc, nr);
+			//initialize with sensor image
+			for(r = 0; r < nr; r++)
+			{
+				for(c = 0; c < nc; c++)
+				{
+					uint8* p = (cgi.imgBuf+r*3*nc+3*c);
+					im_out->tpixels[r][c] = gdTrueColor(p[2], p[1], p[0]);
+				}
 			}
 
-			/* Write the image to the RAM file system where it can be picked up by the webserver on request from the browser. */
-			pic.width = OSC_CAM_MAX_IMAGE_WIDTH;
-			pic.height = OSC_CAM_MAX_IMAGE_HEIGHT;
-			pic.type = OSC_PICTURE_GREYSCALE;
-			pic.data = (void*)cgi.imgBuf;
 
-			return OscBmpWrite(&pic, IMG_FN);
+#endif
+			//there might be additional data to be written to image
+			pData = (uint8*) (cgi.imgBuf+NUM_COLORS*nc*nr);
+			memcpy(&dataSiz, pData, sizeof(uint32));
+			//OscLog(DEBUG, "received %d number of bytes\n", dataSiz);
+			pData += sizeof(uint32);//skip dataSiz
+			if(dataSiz)
+			{
+				i = 0;
+				while(i < dataSiz)
+				{
+					memcpy(&oType, pData+i, sizeof(uint16));
+					i += sizeof(uint16);
+					switch(oType) {
+						case OBJ_LINE:
+						{
+							struct IMG_LINE imgLine;
+							memcpy(&imgLine, pData+i, sizLine);
+							i += sizLine;
+							//OscLog(DEBUG, "received line (%d,%d)-(%d,%d), color(%d)\n", imgLine.x1, imgLine.y1, imgLine.x2, imgLine.y2, (int) imgLine.color);
+							gdImageLine(im_out, imgLine.x1, imgLine.y1, imgLine.x2, imgLine.y2, colorLoolUp(imgLine.color));
+							break;
+						}
+						case OBJ_RECT:
+						{
+							struct IMG_RECT imgRect;
+							memcpy(&imgRect, pData+i, sizRect);
+							i += sizRect;
+							//OscLog(DEBUG, "received rect (%d,%d)-(%d,%d), %s, color(%d)\n", imgRect.left, imgRect.bottom, imgRect.right, imgRect.top, imgRect.recFill ? "fill" : "not fill", (int) imgRect.color);
+							if(imgRect.recFill) {
+								gdImageFilledRectangle(im_out, imgRect.left, imgRect.bottom, imgRect.right, imgRect.top, colorLoolUp(imgRect.color));
+							} else {
+								gdImageRectangle(im_out, imgRect.left, imgRect.bottom, imgRect.right, imgRect.top, colorLoolUp(imgRect.color));
+							}
+							break;
+						}
+						case OBJ_STRING:
+						{
+							gdFontPtr font = gdFontSmall;
+							struct IMG_STRING imgString;
+							memcpy(&imgString, pData+i, sizRect);
+							i += sizString;
+							//OscLog(DEBUG, "received string (%d,%d), font %d, %s, color(%d)\n", imgString.xPos, imgString.yPos, imgString.font, pData+i, imgString.color);
+							switch(imgString.font)
+							{
+								case GIANT:
+									font = gdFontGiant;
+									break;
+								case LARGE:
+									font = gdFontLarge;
+									break;
+								case MEDIUMBOLD:
+									font = gdFontMediumBold;
+									break;
+								case SMALL:
+									font = gdFontSmall;
+									break;
+								case TINY:
+									font = gdFontTiny;
+									break;
+								default:
+									break;//set in definition of font
+							}
+							gdImageString(im_out, font, imgString.xPos, imgString.yPos, pData+i, colorLoolUp(imgString.color));
+						}
+					}
+				}
+			}
+
+			F = fopen(IMG_FN, "wb");
+			gdImageGif(im_out, F);
+			fclose(F);
+			gdImageDestroy(im_out);
+
+			return SUCCESS;
 		}
 		break;
 	default:
@@ -210,9 +330,39 @@ static OSC_ERR SetOptions()
 	OSC_ERR err;
 	struct ARGUMENT_DATA *pArgs = &cgi.args;
 
-	if (pArgs->bDoCaptureColor_supplied)
+	if (pArgs->bImageType_supplied)
 	{
-		err = OscIpcSetParam(cgi.ipcChan, &pArgs->bDoCaptureColor, SET_CAPTURE_MODE, sizeof(pArgs->bDoCaptureColor));
+		err = OscIpcSetParam(cgi.ipcChan, &pArgs->nImageType, SET_IMAGE_TYPE, sizeof(pArgs->nImageType));
+		if (err != SUCCESS)
+		{
+			OscLog(DEBUG, "CGI: Error setting option! (%d)\n", err);
+			return err;
+		}
+	}
+
+	if (pArgs->bThreshold_supplied)
+	{
+		err = OscIpcSetParam(cgi.ipcChan, &pArgs->nThreshold, SET_THRESHOLD, sizeof(pArgs->nThreshold));
+		if (err != SUCCESS)
+		{
+			OscLog(DEBUG, "CGI: Error setting option! (%d)\n", err);
+			return err;
+		}
+	}
+
+	if (pArgs->bExposureTime_supplied)
+	{
+		err = OscIpcSetParam(cgi.ipcChan, &pArgs->nExposureTime, SET_EXPOSURE_TIME, sizeof(pArgs->nExposureTime));
+		if (err != SUCCESS)
+		{
+			OscLog(DEBUG, "CGI: Error setting option! (%d)\n", err);
+			return err;
+		}
+	}
+
+	if (pArgs->bAddInfo_supplied)
+	{
+		err = OscIpcSetParam(cgi.ipcChan, &pArgs->nAddInfo, SET_ADDINFO, sizeof(pArgs->nAddInfo));
 		if (err != SUCCESS)
 		{
 			OscLog(DEBUG, "CGI: Error setting option! (%d)\n", err);
@@ -235,6 +385,13 @@ static void FormCGIResponse()
 	printf("Content-type: text/plain\n\n" );
 
 	printf("imgTS: %u\n", (unsigned int)pAppState->imageTimeStamp);
+	printf("exposureTime: %d\n", pAppState->nExposureTime);
+	printf("Threshold: %d\n", pAppState->nThreshold);
+	printf("Stepcounter: %d\n", pAppState->nStepCounter);
+	printf("width: %d\n", OSC_CAM_MAX_IMAGE_WIDTH/2);
+	printf("height: %d\n", OSC_CAM_MAX_IMAGE_HEIGHT/2);
+	printf("ImageType: %u\n", pAppState->nImageType);
+	printf("AddInfo: %d\n", pAppState->nAddInfo);
 
 	fflush(stdout);
 }
